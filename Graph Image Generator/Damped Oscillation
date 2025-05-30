@@ -1,0 +1,64 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+import pandas as pd
+from google.colab import drive
+
+# Mount Google Drive
+drive.mount('/content/drive')
+
+# Parameters
+output_dir = "/content/drive/My Drive/AIB 2025/dataset 300/Damped"  # Desired folder in Google Drive
+img_dir = os.path.join(output_dir, "images")  # Subfolder for images
+csv_dir = os.path.join(output_dir, "coordinates")  # Subfolder for CSV files
+num_graphs = 1000  # Number of graphs to generate
+x_original = np.linspace(0, 10, 300)  # X-axis range (time), now 250 points
+
+# Ensure output directories exist
+os.makedirs(img_dir, exist_ok=True)
+os.makedirs(csv_dir, exist_ok=True)
+
+# Generate Damped Oscillation Graphs WITHOUT Noise
+for i in range(num_graphs):
+    amplitude = np.random.uniform(1.0, 5.0)        # Random initial amplitude
+    damping_factor = np.random.uniform(0.3, 0.6)   # Random damping factor (updated range)
+    frequency = np.random.uniform(0.5, 1.5)        # Random frequency (updated range)
+    phase = np.random.uniform(0, 2 * np.pi)        # Random phase
+
+    # Generate damped oscillation
+    y_original = amplitude * np.exp(-damping_factor * x_original) * np.sin(2 * np.pi * frequency * x_original + phase)
+
+    # Normalize x to [0, 1]
+    x_normalized = (x_original - np.min(x_original)) / (np.max(x_original) - np.min(x_original))
+
+    # Normalize y to [0, 1] based on the full y-axis scale (-amplitude to +amplitude)
+    y_min = -amplitude  # Full y-axis minimum
+    y_max = amplitude   # Full y-axis maximum
+    y_normalized = (y_original - y_min) / (y_max - y_min)
+
+    # Save the normalized coordinates to a CSV file
+    coord_data = {"X": x_normalized, "Y": y_normalized}
+    df = pd.DataFrame(coord_data)
+    csv_file_name = f"damped_oscillation_{i+1:04d}.csv"
+    df.to_csv(os.path.join(csv_dir, csv_file_name), index=False, float_format='%.6f')  # Prevent scientific notation
+
+    plt.figure(figsize=(672/100, 224/100))
+    plt.plot(x_original, y_original)
+
+    # Set explicit plot limits to match normalization range
+    plt.xlim(np.min(x_original), np.max(x_original)) 
+    plt.ylim(y_min, y_max)                          
+
+    plt.axis('off') # Turn off the axis lines, ticks, and labels entirely
+    # Adjust subplots to use the entire figure area
+    plt.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
+   
+    plt.grid(False)
+
+    img_file_name = f"damped_oscillation_{i+1:04d}.png"
+    plt.savefig(os.path.join(img_dir, img_file_name), dpi=100, pad_inches=0, bbox_inches='tight')
+    plt.close()
+
+    print(f"{i+1}/{num_graphs} done")
+
+print(f"Generated {num_graphs} damped oscillation graphs and corresponding CSV files (normalized CSV, original image scale) in '{output_dir}'.")
