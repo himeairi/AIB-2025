@@ -1,0 +1,65 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+import pandas as pd
+from google.colab import drive
+
+# Mount Google Drive
+drive.mount('/content/drive')
+
+# Parameters
+output_dir = "/content/drive/My Drive/AIB 2025/dataset 300/Sine wave"  # Path to your desired folder in Google Drive
+img_dir = os.path.join(output_dir, "images")  # Subfolder for images
+csv_dir = os.path.join(output_dir, "coordinates")  # Subfolder for CSVs
+num_graphs = 1000  # Number of graphs to generate
+x_original = np.linspace(0, 2 * np.pi, 300)  # 300 points for a smoother curve
+
+# Ensure output directories exist
+os.makedirs(img_dir, exist_ok=True)
+os.makedirs(csv_dir, exist_ok=True)
+
+# Generate Sine Wave Graphs WITHOUT Noise
+for i in range(num_graphs):
+    amplitude = np.random.uniform(0.5, 5.0)  # Random amplitude
+    frequency = np.random.uniform(0.5, 3.0)  # Random frequency
+    phase = np.random.uniform(0, 2 * np.pi)  # Random phase
+
+    # Generate sine wave without noise
+    y_original = amplitude * np.sin(frequency * x_original + phase)
+
+    # Normalize x to [0, 1]
+    x_normalized = (x_original - np.min(x_original)) / (np.max(x_original) - np.min(x_original))
+
+    # Normalize y to [0, 1] based on the full y-axis scale (-amplitude to +amplitude)
+    y_min = -amplitude  # Full y-axis minimum
+    y_max = amplitude   # Full y-axis maximum
+    y_normalized = (y_original - y_min) / (y_max - y_min)
+
+    # Save the normalized coordinates to a CSV file
+    coord_data = {"X": x_normalized, "Y": y_normalized}
+    df = pd.DataFrame(coord_data)
+    csv_file_name = f"sine_wave_{i+1:04d}.csv"
+    df.to_csv(os.path.join(csv_dir, csv_file_name), index=False, float_format='%.6f')  # Prevent scientific notation
+
+    # Define a margin (buffer) to prevent clipping
+    margin = 0.04 * (y_max - y_min)  # 4% margin above and below
+
+    # Plot the graph in its original scale with new figure size (672x224 pixels)
+    plt.figure(figsize=(672/100, 224/100))
+    plt.plot(x_original, y_original, linewidth=2)
+    plt.xlim(np.min(x_original), np.max(x_original))
+    plt.ylim(y_min - margin, y_max + margin)
+
+    # Remove axes and whitespace
+    plt.axis('off')
+    plt.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
+    plt.grid(False)
+
+    # Save the graph as an image (original scale)
+    img_file_name = f"sine_wave_{i+1:04d}.png"
+    plt.savefig(os.path.join(img_dir, img_file_name), dpi=100, pad_inches=0, bbox_inches='tight')
+    plt.close()
+
+    print(f"{i+1}/{num_graphs} done")
+
+print(f"Generated {num_graphs} sine wave graphs and corresponding CSV files (normalized CSV, original image scale) in '{output_dir}'.")
