@@ -1,0 +1,237 @@
+import os
+import glob
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+from transformers import ViTModel, ViTImageProcessor
+from PIL import Image
+import pandas as pd
+from tqdm.notebook import tqdm
+import numpy as np
+import warnings
+
+# --- Model Saving Config ---
+MODEL_SAVE_DIR = "/content/drive/My Drive/AIB 2025/trained_models/10th"
+MODEL_BASE_NAME = "vit_rnn_attn_model_tile"
+FINAL_MODEL_SAVE_NAME = f"{MODEL_BASE_NAME}_final.pth"
+FINAL_MODEL_SAVE_PATH = os.path.join(MODEL_SAVE_DIR, FINAL_MODEL_SAVE_NAME)
+os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
+
+# --- Configurations ---
+BASE_DATA_DIR = "/content/drive/My Drive/AIB 2025/dataset 300"
+NUM_POINTS_FULL_GRAPH = 300
+NUM_STRIPS = 3
+NUM_POINTS_PER_STRIP = NUM_POINTS_FULL_GRAPH // NUM_STRIPS  # 100 if 300 points, 3 strips
+NUM_POINTS = NUM_POINTS_PER_STRIP  # For model and dataset
+STRIP_WIDTH = 224
+STRIP_HEIGHT = 224
+BATCH_SIZE = 12
+EPOCHS = 20
+START_EPOCH = 0
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+VIT_MODEL_NAME = 'google/vit-base-patch16-224-in21k'
+COORD_DIM = 2  # Dimension of (x, y) coordinates
+RNN_HIDDEN_SIZE = 256
+RNN_NUM_LAYERS = 2
+
+INITIAL_TF_RATIO = 0.9
+FINAL_TF_RATIO = 0.1
+TF_DECAY_EPOCHS = int(EPOCHS * 0.5)  # Linear decay over 8 epochs for 16 total
+CHECKPOINT_INTERVAL = 2
+
+# --- Dataset ---
+class GraphDataset(Dataset):
+    def __init__(self, base_dir, image_pattern, coord_pattern, num_points_full_graph, num_strips, num_points_per_strip, vit_model_name):
+        self.image_paths = sorted(glob.glob(os.path.join(base_dir, image_pattern), recursive=True))
+        self.coord_paths = sorted(glob.glob(os.path.join(base_dir, coord_pattern), recursive=True))
+        assert len(self.image_paths) == len(self.coord_paths), "Image and coordinate file counts must match."
+        self.num_points_full_graph = num_points_full_graph
+        self.num_strips = num_strips
+        self.num_points_per_strip = num_points_per_strip
+        self.processor = ViTImageProcessor.from_pretrained(vit_model_name)
+
+    def __len__(self):
+        return len(self.image_paths) * self.num_strips
+
+    def __getitem__(self, idx):
+        # Which wide image and which strip?
+        img_idx = idx // self.num_strips
+        strip_idx = idx % self.num_strips
+
+        img_path = self.image_paths[img_idx]
+        csv_path = self.coord_paths[img_idx]
+
+        # Load the wide image (e.g., 224x672 for 3 strips)
+        img = Image.open(img_path).convert("RGB")
+        width, height = img.size
+        assert width == STRIP_WIDTH * self.num_strips and height == STRIP_HEIGHT, f"Unexpected image size: {img.size}"
+
+        # Crop the strip region
+        left = strip_idx * STRIP_WIDTH
+        upper = 0
+        right = left + STRIP_WIDTH
+        lower = upper + STRIP_HEIGHT
+        strip_img = img.crop((left, upper, right, lower))
+
+        strip_pixel_values = self.processor(images=strip_img, return_tensors="pt")['pixel_values'].squeeze(0)
+
+        # Load CSV and select points in this strip's region
+        coords_df = pd.read_csv(csv_path, header=0)
+        coords = coords_df.iloc[:, :2].values.astype(np.float32)  # (NUM_POINTS_FULL_GRAPH, 2)
+        xs = coords[:, 0]
+        ys = coords[:, 1]
+
+        # Which points are in this strip (global X normalized in [0,1])
+        strip_x_min = strip_idx / self.num_strips
+        strip_x_max = (strip_idx + 1) / self.num_strips
+
+        strip_mask = (xs >= strip_x_min) & (xs < strip_x_max) if strip_idx < self.num_strips - 1 else (xs >= strip_x_min) & (xs <= strip_x_max)
+        strip_xs = xs[strip_mask]
+        strip_ys = ys[strip_mask]
+
+        # If there are more than needed, take NUM_POINTS_PER_STRIP evenly spaced
+        if len(strip_xs) >= self.num_points_per_strip:
+            indices = np.linspace(0, len(strip_xs) - 1, self.num_points_per_strip, dtype=int)
+            strip_xs = strip_xs[indices]
+            strip_ys = strip_ys[indices]
+        elif len(strip_xs) < self.num_points_per_strip:
+            # If not enough, interpolate (resample)
+            interp_lin = np.linspace(0, len(strip_xs) - 1, self.num_points_per_strip)
+            strip_xs = np.interp(interp_lin, np.arange(len(strip_xs)), strip_xs) if len(strip_xs) > 1 else np.full(self.num_points_per_strip, strip_x_min)
+            strip_ys = np.interp(interp_lin, np.arange(len(strip_ys)), strip_ys) if len(strip_ys) > 1 else np.full(self.num_points_per_strip, 0.5)
+
+        # Re-normalize X to [0,1] in the context of this strip
+        strip_xs_local = (strip_xs - strip_x_min) * self.num_strips
+        # Y stays in [0,1] (global normalized)
+
+        strip_coords = np.stack([strip_xs_local, strip_ys], axis=1)  # (NUM_POINTS_PER_STRIP, 2)
+        strip_coords = torch.tensor(strip_coords, dtype=torch.float32)
+
+        first_coord_for_strip = strip_coords[0, :]
+        remaining_coords_for_strip = strip_coords[1:, :]  # (NUM_POINTS_PER_STRIP-1, 2)
+        return strip_pixel_values, first_coord_for_strip, remaining_coords_for_strip
+
+dataset = GraphDataset(
+    base_dir=BASE_DATA_DIR,
+    image_pattern="**/*.png",
+    coord_pattern="**/*.csv",
+    num_points_full_graph=NUM_POINTS_FULL_GRAPH,
+    num_strips=NUM_STRIPS,
+    num_points_per_strip=NUM_POINTS_PER_STRIP,
+    vit_model_name=VIT_MODEL_NAME
+)
+dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
+
+print(f"Found {len(dataset)} strip samples ({len(dataset)//NUM_STRIPS} wide images, {NUM_STRIPS} strips per image).")
+
+# --- Model ---
+class Attention(nn.Module):
+    def __init__(self, encoder_dim, decoder_dim):
+        super(Attention, self).__init__()
+        self.attn = nn.Linear(encoder_dim + decoder_dim, decoder_dim)
+        self.v = nn.Linear(decoder_dim, 1, bias=False)
+
+    def forward(self, decoder_hidden, encoder_outputs):
+        seq_len = encoder_outputs.size(1)
+        decoder_hidden = decoder_hidden.unsqueeze(1).repeat(1, seq_len, 1)
+        energy = torch.tanh(self.attn(torch.cat((decoder_hidden, encoder_outputs), dim=2)))
+        attention_weights = torch.softmax(self.v(energy).squeeze(2), dim=1)
+        context_vector = torch.bmm(attention_weights.unsqueeze(1), encoder_outputs).squeeze(1)
+        return context_vector, attention_weights
+
+class ViTGraphModel(nn.Module):
+    def __init__(self, num_points, vit_model_name, coord_dim, rnn_hidden_size, rnn_num_layers):
+        super(ViTGraphModel, self).__init__()
+        self.num_points = num_points
+        self.coord_dim = coord_dim
+        self.vit = ViTModel.from_pretrained(vit_model_name)
+        self.rnn = nn.LSTM(input_size=coord_dim, hidden_size=rnn_hidden_size, num_layers=rnn_num_layers, batch_first=True)
+        self.attention = Attention(encoder_dim=self.vit.config.hidden_size, decoder_dim=rnn_hidden_size)
+        self.init_hidden_proj = nn.Linear(self.vit.config.hidden_size, rnn_hidden_size)
+        self.fc_out = nn.Linear(rnn_hidden_size + self.vit.config.hidden_size, coord_dim)
+
+    def forward(self, image_pixel_values, first_coord_batch, target_remaining_coords=None, teacher_forcing_ratio=0.5):
+        batch_size = image_pixel_values.size(0)
+        encoder_outputs = self.vit(pixel_values=image_pixel_values).last_hidden_state  # (B, seq_len, vit_hidden_size)
+        global_feature = encoder_outputs.mean(dim=1)
+        h_0 = self.init_hidden_proj(global_feature).unsqueeze(0).repeat(self.rnn.num_layers, 1, 1)
+        c_0 = torch.zeros_like(h_0)
+        rnn_state = (h_0, c_0)
+
+        current_input_coord = first_coord_batch
+        outputs = []
+
+        for t in range(self.num_points - 1):
+            rnn_input = current_input_coord.unsqueeze(1)
+            rnn_output, rnn_state = self.rnn(rnn_input, rnn_state)
+            rnn_hidden = rnn_output.squeeze(1)
+            context_vector, _ = self.attention(rnn_hidden, encoder_outputs)
+            combined = torch.cat((rnn_hidden, context_vector), dim=1)
+            pred_next_coord = self.fc_out(combined)
+            outputs.append(pred_next_coord.unsqueeze(1))
+            if self.training and target_remaining_coords is not None:
+                use_teacher = torch.rand(1).item() < teacher_forcing_ratio
+                current_input_coord = target_remaining_coords[:, t, :] if use_teacher else pred_next_coord.detach()
+            else:
+                current_input_coord = pred_next_coord.detach()
+        return torch.cat(outputs, dim=1)
+
+model = ViTGraphModel(NUM_POINTS, VIT_MODEL_NAME, COORD_DIM, RNN_HIDDEN_SIZE, RNN_NUM_LAYERS).to(DEVICE)
+criterion = nn.MSELoss()
+optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)
+scaler = torch.amp.GradScaler()
+
+print(f"Using device: {DEVICE}")
+print(f"Trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
+
+# --- Training Loop ---
+for epoch in range(START_EPOCH, EPOCHS):
+    model.train()
+    epoch_loss = 0.0
+
+    # Dynamic Scheduled Sampling
+    if epoch < TF_DECAY_EPOCHS:
+        current_tf_ratio = INITIAL_TF_RATIO - (INITIAL_TF_RATIO - FINAL_TF_RATIO) * (epoch / TF_DECAY_EPOCHS)
+    else:
+        current_tf_ratio = FINAL_TF_RATIO
+
+    progress_bar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{EPOCHS}")
+
+    for pixel_values, first_coords, remaining_coords in progress_bar:
+        pixel_values, first_coords, remaining_coords = (
+            pixel_values.to(DEVICE),
+            first_coords.to(DEVICE),
+            remaining_coords.to(DEVICE),
+        )
+
+        optimizer.zero_grad()
+        with torch.amp.autocast(device_type='cuda'):
+            outputs = model(pixel_values, first_coords, target_remaining_coords=remaining_coords, teacher_forcing_ratio=current_tf_ratio)
+            loss = criterion(outputs, remaining_coords)
+
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        scaler.step(optimizer)
+        scaler.update()
+
+        epoch_loss += loss.item() * pixel_values.size(0)
+        progress_bar.set_postfix({'Loss': loss.item()})
+
+    avg_epoch_loss = epoch_loss / len(dataset)
+    print(f"Epoch {epoch+1} - Average Loss: {avg_epoch_loss:.6f}")
+
+    # Periodic Checkpointing
+    if (epoch + 1) % CHECKPOINT_INTERVAL == 0 or (epoch + 1) == EPOCHS:
+        checkpoint_path = os.path.join(MODEL_SAVE_DIR, f"{MODEL_BASE_NAME}_epoch_{epoch+1}.pth")
+        torch.save({
+            'epoch': epoch + 1,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scaler_state_dict': scaler.state_dict(),
+            'loss': avg_epoch_loss
+        }, checkpoint_path)
+        print(f"Checkpoint saved: {checkpoint_path}")
+
+torch.save(model.state_dict(), FINAL_MODEL_SAVE_PATH)
+print(f"Model saved to {FINAL_MODEL_SAVE_PATH}")
