@@ -108,7 +108,7 @@ def download_if_needed(gdrive_url, output_path):
 
 st.title("ViTGraphModel Streamlit App (9th Experiment Replication)")
 
-MODEL_GDRIVE_URL = "https://drive.google.com/file/d/1-_n09taoCpOHCggl3YMkdLSL9vBYIWos/view?usp=drive_link"
+MODEL_GDRIVE_URL = "https://drive.google.com/file/d/1-UCrSrY1V1B-97RYmNSBzl4Oo6Ql7Sv5/view?usp=drive_link"
 LOCAL_MODEL_PATH = "vit_rnn_attn_model_tile_final.pth"
 VIT_NAME = VIT_MODEL_NAME
 
