@@ -1,1 +1,2 @@
-# AIB5 - Mathematical Graph Coordinate Extractor [Part 1][Prototype]
+# AIB5 - mGCE.AI 
+Mathematical Graph Coordinate Extractor [Part 1][Prototype]
