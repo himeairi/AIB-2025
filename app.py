@@ -106,7 +106,7 @@ def download_if_needed(gdrive_url, output_path):
         st.success("Model downloaded successfully!")
     return True
 
-st.title("ViTGraphModel Streamlit App (9th Experiment Replication)")
+st.title("mCGE.AI in action)")
 
 MODEL_GDRIVE_URL = "https://drive.google.com/file/d/11oFdrkYjrd0Jvh0V48-JedL9v1iIyyyw/view?usp=drive_link"
 LOCAL_MODEL_PATH = "vit_rnn_attn_model_tile_final.pth"
@@ -186,11 +186,11 @@ if do_predict:
 
         final_all_coords_np = np.vstack(all_global_points)
 
-    fig, ax = plt.subplots(figsize=(12, 6))
+    fig, ax = plt.subplots(figsize=(12, 4))
     ax.plot(final_all_coords_np[:, 0], final_all_coords_np[:, 1], marker='o', markersize=2)
     ax.set_xlim([0, 1])
     ax.set_ylim([0, 1])
-    ax.set_aspect('equal')
+    ax.set_aspect('auto')  # You can use 'auto' for non-square figures
     ax.set_title("Predicted Graph Points")
     ax.set_xlabel("X (global, normalized)")
     ax.set_ylabel("Y (global, normalized)")
