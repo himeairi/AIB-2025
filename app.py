@@ -186,7 +186,7 @@ if do_predict:
 
         final_all_coords_np = np.vstack(all_global_points)
 
-    fig, ax = plt.subplots(figsize=(6, 6))
+    fig, ax = plt.subplots(figsize=(12, 6))
     ax.plot(final_all_coords_np[:, 0], final_all_coords_np[:, 1], marker='o', markersize=2)
     ax.set_xlim([0, 1])
     ax.set_ylim([0, 1])
