@@ -1,1 +1,2 @@
-https://drive.google.com/file/d/1-UCrSrY1V1B-97RYmNSBzl4Oo6Ql7Sv5/view?usp=drive_link
+https://drive.google.com/file/d/1FD3pjwyKa6sK7E_HvO4cU1BwWdBkcjOS/view?usp=drive_link
+(ver.10 p27)
