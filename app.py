@@ -108,7 +108,7 @@ def download_if_needed(gdrive_url, output_path):
 
 st.title("mCGE.AI in action)")
 
-MODEL_GDRIVE_URL = "https://drive.google.com/file/d/11oFdrkYjrd0Jvh0V48-JedL9v1iIyyyw/view?usp=drive_link"
+MODEL_GDRIVE_URL = "https://drive.google.com/file/d/1FD3pjwyKa6sK7E_HvO4cU1BwWdBkcjOS/view?usp=drive_link"
 LOCAL_MODEL_PATH = "vit_rnn_attn_model_tile_final.pth"
 VIT_NAME = VIT_MODEL_NAME
 
