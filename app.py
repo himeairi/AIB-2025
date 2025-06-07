@@ -106,7 +106,7 @@ def download_if_needed(gdrive_url, output_path):
         st.success("Model downloaded successfully!")
     return True
 
-st.title("mCGE.AI in action)")
+st.title("mCGE.AI in action!")
 
 MODEL_GDRIVE_URL = "https://drive.google.com/file/d/1FD3pjwyKa6sK7E_HvO4cU1BwWdBkcjOS/view?usp=drive_link"
 LOCAL_MODEL_PATH = "vit_rnn_attn_model_tile_final.pth"
@@ -122,10 +122,9 @@ except Exception as e:
     st.stop()
 
 IMAGE_DIR = "Example Image"
-example_images = [
-    f for f in os.listdir(IMAGE_DIR)
-    if f.lower().endswith(('.png', '.jpg', '.jpeg'))
-]
+example_images = sorted(
+    [f for f in os.listdir(IMAGE_DIR) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+)
 if not example_images:
     st.error(f"No images found in the folder '{IMAGE_DIR}'. Please add images.")
     st.stop()
