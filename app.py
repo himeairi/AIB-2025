@@ -141,9 +141,8 @@ if img_width != expected_width or img_height != STRIP_HEIGHT:
     st.stop()
 
 st.sidebar.header("First Point (P0) Input")
-# Allow up to 6 digits after the decimal point
-p0_x = st.sidebar.number_input("Global X [0,1]", min_value=0.0, max_value=1.0, value=0.0, step=0.000001, format="%.6f")
-p0_y = st.sidebar.number_input("Global Y [0,1]", min_value=0.0, max_value=1.0, value=0.5, step=0.000001, format="%.6f")
+p0_y = st.sidebar.number_input("First Point Y (Global, [0,1])", min_value=0.0, max_value=1.0, value=0.5, step=0.000001, format="%.6f")
+p0_x = 0.0
 
 do_predict = st.button("Run Prediction")
 
@@ -189,7 +188,7 @@ if do_predict:
     ax.plot(final_all_coords_np[:, 0], final_all_coords_np[:, 1], marker='o', markersize=2)
     ax.set_xlim([0, 1])
     ax.set_ylim([0, 1])
-    ax.set_aspect('auto')  # You can use 'auto' for non-square figures
+    ax.set_aspect('auto')
     ax.set_title("Predicted Graph Points")
     ax.set_xlabel("X (global, normalized)")
     ax.set_ylabel("Y (global, normalized)")
