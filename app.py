@@ -143,7 +143,8 @@ def crop_to_plot_area(pil_img):
 
 def isolate_function_line(pil_img):
     """
-    Robustly reconstruct a continuous line from rough/fragmented images using contour centroid connect-the-dots logic.
+    Robustly reconstruct a continuous line from rough/fragmented images using contour centroid connect-the-dots logic,
+    and then re-normalize the result so the reconstructed line fills its bounding box perfectly.
     """
     cv2_img = pil_to_cv2(pil_img)
     hsv = cv2.cvtColor(cv2_img, cv2.COLOR_BGR2HSV)
@@ -169,8 +170,7 @@ def isolate_function_line(pil_img):
         bw = cv2.adaptiveThreshold(gray,255,cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV,15,8)
         used_mask = bw
 
-    # --- Connect-the-dots logic ---
-    # 1. Find all contours in the mask
+    # --- Find all contours in the mask (for bounding box) ---
     contours, _ = cv2.findContours(used_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     centroids = []
     for cnt in contours:
@@ -182,19 +182,54 @@ def isolate_function_line(pil_img):
             cX = int(M["m10"] / M["m00"])
             cY = int(M["m01"] / M["m00"])
             centroids.append((cX, cY))
-    # 2. Sort the centroids by x-coordinate (left to right)
+
+    # If nothing found, return blank white
+    if len(centroids) == 0:
+        h, w = used_mask.shape
+        return cv2_to_pil(np.ones((h, w, 3), dtype=np.uint8) * 255)
+
+    # Sort centroids left-to-right
     centroids.sort(key=lambda pt: pt[0])
 
-    # 3. Draw the new continuous line on a white background
-    h, w = used_mask.shape
-    line_img = np.ones((h, w, 3), dtype=np.uint8) * 255
-    if len(centroids) >= 2:
-        pts = np.array(centroids, dtype=np.int32).reshape(-1,1,2)
-        cv2.polylines(line_img, [pts], isClosed=False, color=(0,0,0), thickness=3)
-    elif len(centroids) == 1:
-        cv2.circle(line_img, centroids[0], radius=1, color=(0,0,0), thickness=2)
+    # --- Bounding box of centroids ---
+    xs = [pt[0] for pt in centroids]
+    ys = [pt[1] for pt in centroids]
+    x_min, x_max = min(xs), max(xs)
+    y_min, y_max = min(ys), max(ys)
+    # Avoid division by zero
+    if x_max == x_min: x_max = x_min + 1
+    if y_max == y_min: y_max = y_min + 1
 
-    return cv2_to_pil(line_img)
+    # --- Renormalize centroids into [0, 1] space ---
+    normalized_points = [((px - x_min) / (x_max - x_min), (py - y_min) / (y_max - y_min)) for px, py in centroids]
+
+    # --- Find bounding box of all contours (should include all line fragments) for output canvas size ---
+    all_points = np.vstack([cnt.reshape(-1, 2) for cnt in contours if len(cnt) >= 1])
+    if all_points.shape[0] == 0:
+        h, w = used_mask.shape
+        return cv2_to_pil(np.ones((h, w, 3), dtype=np.uint8) * 255)
+    bb_x, bb_y, bb_w, bb_h = cv2.boundingRect(all_points)
+
+    # Minimum 2x2 box for robustness
+    bb_w = max(bb_w, 2)
+    bb_h = max(bb_h, 2)
+
+    # --- Create blank white canvas of correct size ---
+    canvas = np.ones((bb_h, bb_w, 3), dtype=np.uint8) * 255
+
+    # --- Scale normalized points back to canvas size ---
+    scaled_points_for_drawing = [
+        (int(px_norm * (bb_w - 1)), int(py_norm * (bb_h - 1)))
+        for (px_norm, py_norm) in normalized_points
+    ]
+    # Draw
+    if len(scaled_points_for_drawing) >= 2:
+        pts = np.array(scaled_points_for_drawing, dtype=np.int32).reshape(-1,1,2)
+        cv2.polylines(canvas, [pts], isClosed=False, color=(0,0,0), thickness=3)
+    elif len(scaled_points_for_drawing) == 1:
+        cv2.circle(canvas, scaled_points_for_drawing[0], radius=1, color=(0,0,0), thickness=2)
+
+    return cv2_to_pil(canvas)
 
 def prepare_image_for_model(pil_img):
     """Resize height to 224, paste on left of 672x224 canvas, return canvas and width ratio."""
