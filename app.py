@@ -108,7 +108,6 @@ def download_if_needed(gdrive_url, output_path):
     return True
 
 # --- IMAGE PRE-PROCESSING PIPELINE FUNCTIONS ---
-
 def pil_to_cv2(img):
     img = img.convert('RGB')
     return cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
@@ -117,7 +116,6 @@ def cv2_to_pil(img):
     return Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
 
 def crop_to_plot_area(pil_img):
-    """Finds plot rectangle via contour and crops to it."""
     cv2_img = pil_to_cv2(pil_img)
     gray = cv2.cvtColor(cv2_img, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(gray, (7,7), 0)
@@ -125,7 +123,6 @@ def crop_to_plot_area(pil_img):
     contours, _ = cv2.findContours(edged, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
         return pil_img
-    # Find the largest rectangle contour
     max_rect = None
     max_area = 0
     for c in contours:
@@ -142,97 +139,65 @@ def crop_to_plot_area(pil_img):
         return pil_img
 
 def isolate_function_line(pil_img):
-    """
-    Robustly reconstruct a continuous line from rough/fragmented images using contour centroid connect-the-dots logic,
-    and then re-normalize the result so the reconstructed line fills its bounding box perfectly.
-    """
     cv2_img = pil_to_cv2(pil_img)
     hsv = cv2.cvtColor(cv2_img, cv2.COLOR_BGR2HSV)
-
-    # Try color-based mask first
     masks = []
-    # Red
     masks.append(cv2.inRange(hsv, (0,70,50), (10,255,255)))
     masks.append(cv2.inRange(hsv, (170,70,50), (180,255,255)))
-    # Blue
     masks.append(cv2.inRange(hsv, (90, 60, 0), (130, 255, 255)))
-    # Green
     masks.append(cv2.inRange(hsv, (36, 25, 25), (86, 255,255)))
     color_mask = sum(masks)
     color_mask = cv2.medianBlur(color_mask, 5)
-
     used_mask = None
-    if cv2.countNonZero(color_mask) > 100:  # Color line found
+    if cv2.countNonZero(color_mask) > 100:
         used_mask = color_mask
     else:
-        # Fallback: B&W image
         gray = cv2.cvtColor(cv2_img, cv2.COLOR_BGR2GRAY)
         bw = cv2.adaptiveThreshold(gray,255,cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV,15,8)
         used_mask = bw
-
-    # --- Find all contours in the mask (for bounding box) ---
+    # --- Robust connect-the-dots with normalization ---
     contours, _ = cv2.findContours(used_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     centroids = []
     for cnt in contours:
         area = cv2.contourArea(cnt)
-        if area < 4:  # Filter out tiny noise
+        if area < 4:
             continue
         M = cv2.moments(cnt)
         if M["m00"] != 0:
             cX = int(M["m10"] / M["m00"])
             cY = int(M["m01"] / M["m00"])
             centroids.append((cX, cY))
-
-    # If nothing found, return blank white
     if len(centroids) == 0:
         h, w = used_mask.shape
         return cv2_to_pil(np.ones((h, w, 3), dtype=np.uint8) * 255)
-
-    # Sort centroids left-to-right
     centroids.sort(key=lambda pt: pt[0])
-
-    # --- Bounding box of centroids ---
     xs = [pt[0] for pt in centroids]
     ys = [pt[1] for pt in centroids]
     x_min, x_max = min(xs), max(xs)
     y_min, y_max = min(ys), max(ys)
-    # Avoid division by zero
     if x_max == x_min: x_max = x_min + 1
     if y_max == y_min: y_max = y_min + 1
-
-    # --- Renormalize centroids into [0, 1] space ---
     normalized_points = [((px - x_min) / (x_max - x_min), (py - y_min) / (y_max - y_min)) for px, py in centroids]
-
-    # --- Find bounding box of all contours (should include all line fragments) for output canvas size ---
     all_points = np.vstack([cnt.reshape(-1, 2) for cnt in contours if len(cnt) >= 1])
     if all_points.shape[0] == 0:
         h, w = used_mask.shape
         return cv2_to_pil(np.ones((h, w, 3), dtype=np.uint8) * 255)
     bb_x, bb_y, bb_w, bb_h = cv2.boundingRect(all_points)
-
-    # Minimum 2x2 box for robustness
     bb_w = max(bb_w, 2)
     bb_h = max(bb_h, 2)
-
-    # --- Create blank white canvas of correct size ---
     canvas = np.ones((bb_h, bb_w, 3), dtype=np.uint8) * 255
-
-    # --- Scale normalized points back to canvas size ---
     scaled_points_for_drawing = [
         (int(px_norm * (bb_w - 1)), int(py_norm * (bb_h - 1)))
         for (px_norm, py_norm) in normalized_points
     ]
-    # Draw
     if len(scaled_points_for_drawing) >= 2:
         pts = np.array(scaled_points_for_drawing, dtype=np.int32).reshape(-1,1,2)
         cv2.polylines(canvas, [pts], isClosed=False, color=(0,0,0), thickness=3)
     elif len(scaled_points_for_drawing) == 1:
         cv2.circle(canvas, scaled_points_for_drawing[0], radius=1, color=(0,0,0), thickness=2)
-
     return cv2_to_pil(canvas)
 
 def prepare_image_for_model(pil_img):
-    """Resize height to 224, paste on left of 672x224 canvas, return canvas and width ratio."""
     orig_width, orig_height = pil_img.size
     target_h = 224
     resized_w = int(orig_width * (target_h / orig_height))
@@ -277,11 +242,12 @@ uploaded_file = st.file_uploader("Or upload your own chart image", type=["png", 
 
 prepared_img = None
 width_ratio = None
+pil_img = None  # For example images
 
 if uploaded_file is not None:
     try:
         user_img = Image.open(uploaded_file).convert("RGB")
-        st.session_state['original_size'] = user_img.size  # <--- Store original size here!
+        st.session_state['original_size'] = user_img.size
         cropped = crop_to_plot_area(user_img)
         line_isolated = isolate_function_line(cropped)
         prepared_img, width_ratio = prepare_image_for_model(line_isolated)
@@ -304,90 +270,121 @@ else:
 do_predict = st.button("Run Prediction")
 
 if do_predict:
+    # --- Path 1: User-uploaded image, use full pipeline and denormalize ---
     if uploaded_file is not None and 'prepared_img' in st.session_state and 'width_ratio' in st.session_state:
         img_for_model = st.session_state['prepared_img']
         width_ratio = st.session_state['width_ratio']
-    elif example_images:
-        cropped = crop_to_plot_area(pil_img)
-        line_isolated = isolate_function_line(cropped)
-        img_for_model, width_ratio = prepare_image_for_model(line_isolated)
-    else:
-        st.error("No valid image to run prediction.")
-        st.stop()
-
-    expected_width = STRIP_WIDTH * NUM_STRIPS
-    if img_for_model.size != (expected_width, STRIP_HEIGHT):
-        st.error(f"Prepared image size must be {STRIP_HEIGHT}px high by {expected_width}px wide (672x224).")
-        st.stop()
-
-    with torch.no_grad():
-        current_strip_start_coord_global = np.array([p0_x, p0_y], dtype=np.float32)
-        all_global_points = []
-        for strip_idx in range(NUM_STRIPS):
-            left = strip_idx * STRIP_WIDTH
-            upper = 0
-            right = left + STRIP_WIDTH
-            lower = upper + STRIP_HEIGHT
-            strip_img = img_for_model.crop((left, upper, right, lower))
-
-            strip_pixel_values = processor(images=strip_img, return_tensors="pt")['pixel_values'].to(DEVICE)
-
-            strip_x_min = strip_idx / NUM_STRIPS
-            local_x = (current_strip_start_coord_global[0] - strip_x_min) * NUM_STRIPS
-            local_x = float(np.clip(local_x, 0.0, 1.0))
-            local_y = float(np.clip(current_strip_start_coord_global[1], 0.0, 1.0))
-            first_coord_for_model_input = torch.tensor([[local_x, local_y]], dtype=torch.float32, device=DEVICE)
-
-            pred_strip_coords = model(strip_pixel_values, first_coord_for_model_input)
-            pred_strip_coords = pred_strip_coords.squeeze(0).cpu().numpy()
-
-            strip_points = np.vstack([np.array([[local_x, local_y]], dtype=np.float32), pred_strip_coords])
-
-            global_xs = strip_points[:, 0] / NUM_STRIPS + strip_x_min
-            global_ys = strip_points[:, 1]
-
-            global_points = np.stack([global_xs, global_ys], axis=1)
-
-            if strip_idx == 0:
-                all_global_points.append(global_points)
-            else:
-                all_global_points.append(global_points[1:])
-
-            current_strip_start_coord_global = global_points[-1]
-
-        coords = np.vstack(all_global_points)
-        coords = coords[coords[:,0] <= width_ratio]
-        x_real = coords[:,0] / width_ratio * (user_x_max - user_x_min) + user_x_min
-        y_real = coords[:,1] * (user_y_max - user_y_min) + user_y_min
-        denorm_coords = np.stack([x_real, y_real], axis=1)
-
-    # --- Begin: Dynamic figure size for aspect ratio ---
-    if 'original_size' in st.session_state:
-        original_width, original_height = st.session_state['original_size']
-        aspect_ratio = original_width / original_height
-        plot_height = 5  # You can adjust this as needed
+        with torch.no_grad():
+            current_strip_start_coord_global = np.array([p0_x, p0_y], dtype=np.float32)
+            all_global_points = []
+            for strip_idx in range(NUM_STRIPS):
+                left = strip_idx * STRIP_WIDTH
+                upper = 0
+                right = left + STRIP_WIDTH
+                lower = upper + STRIP_HEIGHT
+                strip_img = img_for_model.crop((left, upper, right, lower))
+                strip_pixel_values = processor(images=strip_img, return_tensors="pt")['pixel_values'].to(DEVICE)
+                strip_x_min = strip_idx / NUM_STRIPS
+                local_x = (current_strip_start_coord_global[0] - strip_x_min) * NUM_STRIPS
+                local_x = float(np.clip(local_x, 0.0, 1.0))
+                local_y = float(np.clip(current_strip_start_coord_global[1], 0.0, 1.0))
+                first_coord_for_model_input = torch.tensor([[local_x, local_y]], dtype=torch.float32, device=DEVICE)
+                pred_strip_coords = model(strip_pixel_values, first_coord_for_model_input)
+                pred_strip_coords = pred_strip_coords.squeeze(0).cpu().numpy()
+                strip_points = np.vstack([np.array([[local_x, local_y]], dtype=np.float32), pred_strip_coords])
+                global_xs = strip_points[:, 0] / NUM_STRIPS + strip_x_min
+                global_ys = strip_points[:, 1]
+                global_points = np.stack([global_xs, global_ys], axis=1)
+                if strip_idx == 0:
+                    all_global_points.append(global_points)
+                else:
+                    all_global_points.append(global_points[1:])
+                current_strip_start_coord_global = global_points[-1]
+            coords = np.vstack(all_global_points)
+            coords = coords[coords[:,0] <= width_ratio]
+            x_real = coords[:,0] / width_ratio * (user_x_max - user_x_min) + user_x_min
+            y_real = coords[:,1] * (user_y_max - user_y_min) + user_y_min
+            denorm_coords = np.stack([x_real, y_real], axis=1)
+        # Dynamic figsize
+        if 'original_size' in st.session_state:
+            original_width, original_height = st.session_state['original_size']
+            aspect_ratio = original_width / original_height
+            plot_height = 5
+            plot_width = plot_height * aspect_ratio
+            final_figsize = (plot_width, plot_height)
+        else:
+            final_figsize = (12, 4)
+        fig, ax = plt.subplots(figsize=final_figsize)
+        ax.plot(denorm_coords[:, 0], denorm_coords[:, 1], marker='o', markersize=2)
+        ax.set_xlim([user_x_min, user_x_max])
+        ax.set_ylim([user_y_min, user_y_max])
+        ax.set_aspect('auto')
+        ax.set_title("Predicted Graph Points (real-world units)")
+        ax.set_xlabel("X (user units)")
+        ax.set_ylabel("Y (user units)")
+        st.pyplot(fig)
+        csv_buffer = io.StringIO()
+        np.savetxt(csv_buffer, denorm_coords, delimiter=",", header="x,y", comments="", fmt="%.6f")
+        csv_data = csv_buffer.getvalue()
+        st.download_button(
+            label="Download Predicted Coordinates as CSV",
+            data=csv_data,
+            file_name="predicted_coords.csv",
+            mime="text/csv"
+        )
+    # --- Path 2: Example image, no pre-processing, no denormalization (v5 logic) ---
+    elif uploaded_file is None and pil_img is not None:
+        img_for_model = pil_img
+        with torch.no_grad():
+            current_strip_start_coord_global = np.array([0.0, p0_y], dtype=np.float32)
+            all_global_points = []
+            for strip_idx in range(NUM_STRIPS):
+                left = strip_idx * STRIP_WIDTH
+                upper = 0
+                right = left + STRIP_WIDTH
+                lower = upper + STRIP_HEIGHT
+                strip_img = img_for_model.crop((left, upper, right, lower))
+                strip_pixel_values = processor(images=strip_img, return_tensors="pt")['pixel_values'].to(DEVICE)
+                strip_x_min = strip_idx / NUM_STRIPS
+                local_x = (current_strip_start_coord_global[0] - strip_x_min) * NUM_STRIPS
+                local_x = float(np.clip(local_x, 0.0, 1.0))
+                local_y = float(np.clip(current_strip_start_coord_global[1], 0.0, 1.0))
+                first_coord_for_model_input = torch.tensor([[local_x, local_y]], dtype=torch.float32, device=DEVICE)
+                pred_strip_coords = model(strip_pixel_values, first_coord_for_model_input)
+                pred_strip_coords = pred_strip_coords.squeeze(0).cpu().numpy()
+                strip_points = np.vstack([np.array([[local_x, local_y]], dtype=np.float32), pred_strip_coords])
+                global_xs = strip_points[:, 0] / NUM_STRIPS + strip_x_min
+                global_ys = strip_points[:, 1]
+                global_points = np.stack([global_xs, global_ys], axis=1)
+                if strip_idx == 0:
+                    all_global_points.append(global_points)
+                else:
+                    all_global_points.append(global_points[1:])
+                current_strip_start_coord_global = global_points[-1]
+            coords = np.vstack(all_global_points)
+        # Use the image aspect ratio for the plot
+        example_width, example_height = img_for_model.size
+        aspect_ratio = example_width / example_height
+        plot_height = 5
         plot_width = plot_height * aspect_ratio
         final_figsize = (plot_width, plot_height)
+        fig, ax = plt.subplots(figsize=final_figsize)
+        ax.plot(coords[:, 0], coords[:, 1], marker='o', markersize=2)
+        ax.set_xlim([0, 1])
+        ax.set_ylim([0, 1])
+        ax.set_aspect('auto')
+        ax.set_title("Predicted Graph Points (normalized)")
+        ax.set_xlabel("X (normalized)")
+        ax.set_ylabel("Y (normalized)")
+        st.pyplot(fig)
+        csv_buffer = io.StringIO()
+        np.savetxt(csv_buffer, coords, delimiter=",", header="x,y", comments="", fmt="%.6f")
+        csv_data = csv_buffer.getvalue()
+        st.download_button(
+            label="Download Predicted Coordinates as CSV",
+            data=csv_data,
+            file_name="predicted_coords.csv",
+            mime="text/csv"
+        )
     else:
-        final_figsize = (12, 4)
-    # --- End: Dynamic figure size ---
-
-    fig, ax = plt.subplots(figsize=final_figsize)
-    ax.plot(denorm_coords[:, 0], denorm_coords[:, 1], marker='o', markersize=2)
-    ax.set_xlim([user_x_min, user_x_max])
-    ax.set_ylim([user_y_min, user_y_max])
-    ax.set_aspect('auto')
-    ax.set_title("Predicted Graph Points (real-world units)")
-    ax.set_xlabel("X (user units)")
-    ax.set_ylabel("Y (user units)")
-    st.pyplot(fig)
-
-    csv_buffer = io.StringIO()
-    np.savetxt(csv_buffer, denorm_coords, delimiter=",", header="x,y", comments="", fmt="%.6f")
-    csv_data = csv_buffer.getvalue()
-    st.download_button(
-        label="Download Predicted Coordinates as CSV",
-        data=csv_data,
-        file_name="predicted_coords.csv",
-        mime="text/csv"
-    )
+        st.warning("Please upload an image or select an example image.")
