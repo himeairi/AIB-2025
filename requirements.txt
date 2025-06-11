@@ -5,3 +5,4 @@ pillow
 numpy
 matplotlib
 gdown
+cv2
