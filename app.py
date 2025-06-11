@@ -9,7 +9,6 @@ import matplotlib.pyplot as plt
 import gdown
 import io
 
-# --- Model Configurations (MUST MATCH 9th EXPERIMENT) ---
 NUM_POINTS_FULL_GRAPH = 300
 NUM_STRIPS = 3
 NUM_POINTS_PER_STRIP = NUM_POINTS_FULL_GRAPH // NUM_STRIPS  # 100
@@ -121,32 +120,45 @@ except Exception as e:
     st.error(f"Error loading model or processor from {LOCAL_MODEL_PATH}: {e}")
     st.stop()
 
-IMAGE_DIR = "Example Image"
-example_images = sorted(
-    [f for f in os.listdir(IMAGE_DIR) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-)
-if not example_images:
-    st.error(f"No images found in the folder '{IMAGE_DIR}'. Please add images.")
-    st.stop()
-
-selected_image_name = st.selectbox("Select an example wide graph image:", example_images)
-selected_image_path = os.path.join(IMAGE_DIR, selected_image_name)
-
-pil_img = Image.open(selected_image_path).convert("RGB")
-st.image(pil_img, caption=f"Selected Image: {selected_image_name}", channels="RGB")
-img_width, img_height = pil_img.size
-expected_width = STRIP_WIDTH * NUM_STRIPS
-if img_width != expected_width or img_height != STRIP_HEIGHT:
-    st.error(f"Image size must be {STRIP_HEIGHT}px high by {expected_width}px wide (e.g., 224x672 for 3 strips).")
-    st.stop()
-
 st.sidebar.header("First Point (P0) Input")
 p0_y = st.sidebar.number_input("First Point Y (Global, [0,1])", min_value=0.0, max_value=1.0, value=0.5, step=0.000001, format="%.6f")
 p0_x = 0.0
 
+IMAGE_DIR = "Example Image"
+example_images = sorted(
+    [f for f in os.listdir(IMAGE_DIR) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+)
+
+uploaded_file = st.file_uploader("Or upload your own wide graph image", type=["png", "jpg", "jpeg"])
+
+use_uploaded = False
+if uploaded_file is not None:
+    try:
+        pil_img = Image.open(uploaded_file).convert("RGB")
+        st.success("Uploaded image loaded successfully!")
+        use_uploaded = True
+    except Exception as e:
+        st.error(f"Failed to open uploaded image: {e}")
+        pil_img = None
+elif example_images:
+    selected_image_name = st.selectbox("Select an example wide graph image:", example_images)
+    selected_image_path = os.path.join(IMAGE_DIR, selected_image_name)
+    pil_img = Image.open(selected_image_path).convert("RGB")
+    st.image(pil_img, caption=f"Selected Image: {selected_image_name}", channels="RGB")
+else:
+    st.error(f"No images found in the folder '{IMAGE_DIR}'. Please add images or upload one.")
+    pil_img = None
+
+if pil_img is not None:
+    img_width, img_height = pil_img.size
+    expected_width = STRIP_WIDTH * NUM_STRIPS
+    if img_width != expected_width or img_height != STRIP_HEIGHT:
+        st.error(f"Image size must be {STRIP_HEIGHT}px high by {expected_width}px wide (e.g., 224x672 for 3 strips).")
+        pil_img = None
+
 do_predict = st.button("Run Prediction")
 
-if do_predict:
+if do_predict and pil_img is not None:
     with torch.no_grad():
         current_strip_start_coord_global = np.array([p0_x, p0_y], dtype=np.float32)
         all_global_points = []
@@ -194,7 +206,6 @@ if do_predict:
     ax.set_ylabel("Y (global, normalized)")
     st.pyplot(fig)
 
-    # --- Download CSV Button (no scientific notation, 6 decimals) ---
     csv_buffer = io.StringIO()
     np.savetxt(csv_buffer, final_all_coords_np, delimiter=",", header="x,y", comments="", fmt="%.6f")
     csv_data = csv_buffer.getvalue()
