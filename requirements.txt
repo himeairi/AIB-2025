@@ -1,8 +1,8 @@
 streamlit
-torch
 transformers
 pillow
 numpy
 matplotlib
 gdown
-cv2
+opencv-python-headless
+torch --index-url https://download.pytorch.org/whl/cpu
