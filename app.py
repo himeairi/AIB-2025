@@ -9,10 +9,14 @@ import matplotlib.pyplot as plt
 import gdown
 import io
 
+import cv2
+import tempfile
+
+# --- Model Configurations (MUST MATCH 9th EXPERIMENT) ---
 NUM_POINTS_FULL_GRAPH = 300
 NUM_STRIPS = 3
-NUM_POINTS_PER_STRIP = NUM_POINTS_FULL_GRAPH // NUM_STRIPS  # 100
-MODEL_NUM_POINTS_ARG = NUM_POINTS_PER_STRIP
+# Always use 100 as model argument for robustness as per instructions
+MODEL_NUM_POINTS_ARG = 100
 STRIP_WIDTH = 224
 STRIP_HEIGHT = 224
 RNN_HIDDEN_SIZE = 256
@@ -71,8 +75,9 @@ class ViTGraphModel(nn.Module):
 @st.cache_resource
 def load_model_and_processor(model_path, vit_name):
     processor = ViTImageProcessor.from_pretrained(vit_name)
+    # Hardcode num_points=100 for robustness
     model = ViTGraphModel(
-        num_points=MODEL_NUM_POINTS_ARG,
+        num_points=100,
         vit_model_name=vit_name,
         coord_dim=COORD_DIM,
         rnn_hidden_size=RNN_HIDDEN_SIZE,
@@ -105,6 +110,90 @@ def download_if_needed(gdrive_url, output_path):
         st.success("Model downloaded successfully!")
     return True
 
+# ========== STEP 3: IMAGE PRE-PROCESSING PIPELINE FUNCTIONS ==========
+
+def pil_to_cv2(img):
+    img = img.convert('RGB')
+    return cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+
+def cv2_to_pil(img):
+    return Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+
+def crop_to_plot_area(pil_img):
+    """Finds plot rectangle via contour and crops to it."""
+    cv2_img = pil_to_cv2(pil_img)
+    gray = cv2.cvtColor(cv2_img, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (7,7), 0)
+    edged = cv2.Canny(blur, 50, 150)
+    contours, _ = cv2.findContours(edged, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return pil_img
+    # Find the largest rectangle contour
+    max_rect = None
+    max_area = 0
+    for c in contours:
+        x, y, w, h = cv2.boundingRect(c)
+        area = w * h
+        if area > max_area and w > 50 and h > 50:
+            max_area = area
+            max_rect = (x, y, w, h)
+    if max_rect is not None:
+        x, y, w, h = max_rect
+        cropped = cv2_img[y:y+h, x:x+w]
+        return cv2_to_pil(cropped)
+    else:
+        return pil_img
+
+def isolate_function_line(pil_img):
+    """Try to isolate the function line. Color filter; if fails, fallback to biggest contour."""
+    cv2_img = pil_to_cv2(pil_img)
+    hsv = cv2.cvtColor(cv2_img, cv2.COLOR_BGR2HSV)
+    # Try to find colored line (red, blue, green, etc.)
+    # Assume that a strong color line is present
+    masks = []
+    # Red
+    masks.append(cv2.inRange(hsv, (0,70,50), (10,255,255)))
+    masks.append(cv2.inRange(hsv, (170,70,50), (180,255,255)))
+    # Blue
+    masks.append(cv2.inRange(hsv, (90, 60, 0), (130, 255, 255)))
+    # Green
+    masks.append(cv2.inRange(hsv, (36, 25, 25), (86, 255,255)))
+    color_mask = sum(masks)
+    color_mask = cv2.medianBlur(color_mask, 5)
+    if cv2.countNonZero(color_mask) > 100:  # Color line found
+        res = cv2.bitwise_and(cv2_img, cv2_img, mask=color_mask)
+        # Convert non-zero area to white, rest to black
+        gray = cv2.cvtColor(res, cv2.COLOR_BGR2GRAY)
+        _, bw = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
+        line_img = np.ones_like(cv2_img) * 255
+        line_img[bw > 0] = [0,0,0]
+        return cv2_to_pil(line_img)
+    # Fallback: largest contour (for B&W)
+    gray = cv2.cvtColor(cv2_img, cv2.COLOR_BGR2GRAY)
+    bw = cv2.adaptiveThreshold(gray,255,cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV,15,8)
+    contours, _ = cv2.findContours(bw, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return pil_img
+    largest = max(contours, key=cv2.contourArea)
+    mask = np.zeros_like(gray)
+    cv2.drawContours(mask, [largest], -1, 255, thickness=3)
+    line_img = np.ones_like(cv2_img)*255
+    line_img[mask > 0] = [0,0,0]
+    return cv2_to_pil(line_img)
+
+def prepare_image_for_model(pil_img):
+    """Resize height to 224, paste on left of 672x224 canvas, return canvas and width ratio."""
+    orig_width, orig_height = pil_img.size
+    target_h = 224
+    resized_w = int(orig_width * (target_h / orig_height))
+    img_resized = pil_img.resize((resized_w, target_h), Image.LANCZOS)
+    canvas = Image.new('RGB', (672, 224), (255,255,255))
+    canvas.paste(img_resized, (0,0))
+    width_ratio = resized_w / 672.0
+    return canvas, width_ratio
+
+# ========== END IMAGE PRE-PROCESSING PIPELINE FUNCTIONS ==========
+
 st.title("mCGE.AI in action!")
 
 MODEL_GDRIVE_URL = "https://drive.google.com/file/d/1FD3pjwyKa6sK7E_HvO4cU1BwWdBkcjOS/view?usp=drive_link"
@@ -120,45 +209,71 @@ except Exception as e:
     st.error(f"Error loading model or processor from {LOCAL_MODEL_PATH}: {e}")
     st.stop()
 
+# --- UI: Input sidebar for first point and chart axes min/max ---
 st.sidebar.header("First Point (P0) Input")
 p0_y = st.sidebar.number_input("First Point Y (Global, [0,1])", min_value=0.0, max_value=1.0, value=0.5, step=0.000001, format="%.6f")
 p0_x = 0.0
+st.sidebar.header("Original Chart Axes Range")
+user_x_min = st.sidebar.number_input("X-Min", value=0.0, format="%.6f")
+user_x_max = st.sidebar.number_input("X-Max", value=1.0, format="%.6f")
+user_y_min = st.sidebar.number_input("Y-Min", value=0.0, format="%.6f")
+user_y_max = st.sidebar.number_input("Y-Max", value=1.0, format="%.6f")
 
+# --- Image selection and upload ---
 IMAGE_DIR = "Example Image"
 example_images = sorted(
     [f for f in os.listdir(IMAGE_DIR) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
 )
+uploaded_file = st.file_uploader("Or upload your own chart image", type=["png", "jpg", "jpeg"])
 
-uploaded_file = st.file_uploader("Or upload your own wide graph image", type=["png", "jpg", "jpeg"])
+# STEP 4: If user uploads, instantly run preprocessing pipeline and show preview
+prepared_img = None
+width_ratio = None
 
-use_uploaded = False
 if uploaded_file is not None:
     try:
-        pil_img = Image.open(uploaded_file).convert("RGB")
-        st.success("Uploaded image loaded successfully!")
-        use_uploaded = True
+        user_img = Image.open(uploaded_file).convert("RGB")
+        cropped = crop_to_plot_area(user_img)
+        line_isolated = isolate_function_line(cropped)
+        prepared_img, width_ratio = prepare_image_for_model(line_isolated)
+        st.session_state['prepared_img'] = prepared_img
+        st.session_state['width_ratio'] = width_ratio
+        cols = st.columns(2)
+        cols[0].image(user_img, caption="Original uploaded image", channels="RGB")
+        cols[1].image(prepared_img, caption=f"Image prepared for AI (672x224, width_ratio={width_ratio:.3f})", channels="RGB")
     except Exception as e:
-        st.error(f"Failed to open uploaded image: {e}")
-        pil_img = None
+        st.error(f"Failed to preprocess uploaded image: {e}")
+        prepared_img = None
 elif example_images:
     selected_image_name = st.selectbox("Select an example wide graph image:", example_images)
     selected_image_path = os.path.join(IMAGE_DIR, selected_image_name)
     pil_img = Image.open(selected_image_path).convert("RGB")
     st.image(pil_img, caption=f"Selected Image: {selected_image_name}", channels="RGB")
+    # For demo images, process only if user clicks predict
 else:
     st.error(f"No images found in the folder '{IMAGE_DIR}'. Please add images or upload one.")
-    pil_img = None
-
-if pil_img is not None:
-    img_width, img_height = pil_img.size
-    expected_width = STRIP_WIDTH * NUM_STRIPS
-    if img_width != expected_width or img_height != STRIP_HEIGHT:
-        st.error(f"Image size must be {STRIP_HEIGHT}px high by {expected_width}px wide (e.g., 224x672 for 3 strips).")
-        pil_img = None
 
 do_predict = st.button("Run Prediction")
 
-if do_predict and pil_img is not None:
+if do_predict:
+    # STEP 5: Use session_state prepared image if user uploaded, else process example image live
+    if uploaded_file is not None and 'prepared_img' in st.session_state and 'width_ratio' in st.session_state:
+        img_for_model = st.session_state['prepared_img']
+        width_ratio = st.session_state['width_ratio']
+    elif example_images:
+        # For demo images, run the pipeline on the selected sample
+        cropped = crop_to_plot_area(pil_img)
+        line_isolated = isolate_function_line(cropped)
+        img_for_model, width_ratio = prepare_image_for_model(line_isolated)
+    else:
+        st.error("No valid image to run prediction.")
+        st.stop()
+
+    expected_width = STRIP_WIDTH * NUM_STRIPS
+    if img_for_model.size != (expected_width, STRIP_HEIGHT):
+        st.error(f"Prepared image size must be {STRIP_HEIGHT}px high by {expected_width}px wide (672x224).")
+        st.stop()
+
     with torch.no_grad():
         current_strip_start_coord_global = np.array([p0_x, p0_y], dtype=np.float32)
         all_global_points = []
@@ -167,7 +282,7 @@ if do_predict and pil_img is not None:
             upper = 0
             right = left + STRIP_WIDTH
             lower = upper + STRIP_HEIGHT
-            strip_img = pil_img.crop((left, upper, right, lower))
+            strip_img = img_for_model.crop((left, upper, right, lower))
 
             strip_pixel_values = processor(images=strip_img, return_tensors="pt")['pixel_values'].to(DEVICE)
 
@@ -194,20 +309,30 @@ if do_predict and pil_img is not None:
 
             current_strip_start_coord_global = global_points[-1]
 
-        final_all_coords_np = np.vstack(all_global_points)
+        coords = np.vstack(all_global_points)
 
+        # FILTER: Only keep points where x <= width_ratio
+        coords = coords[coords[:,0] <= width_ratio]
+
+        # DENORMALIZE using user input
+        x_real = coords[:,0] / width_ratio * (user_x_max - user_x_min) + user_x_min
+        y_real = coords[:,1] * (user_y_max - user_y_min) + user_y_min
+        denorm_coords = np.stack([x_real, y_real], axis=1)
+
+    # Plot denormalized data
     fig, ax = plt.subplots(figsize=(12, 4))
-    ax.plot(final_all_coords_np[:, 0], final_all_coords_np[:, 1], marker='o', markersize=2)
-    ax.set_xlim([0, 1])
-    ax.set_ylim([0, 1])
+    ax.plot(denorm_coords[:, 0], denorm_coords[:, 1], marker='o', markersize=2)
+    ax.set_xlim([user_x_min, user_x_max])
+    ax.set_ylim([user_y_min, user_y_max])
     ax.set_aspect('auto')
-    ax.set_title("Predicted Graph Points")
-    ax.set_xlabel("X (global, normalized)")
-    ax.set_ylabel("Y (global, normalized)")
+    ax.set_title("Predicted Graph Points (real-world units)")
+    ax.set_xlabel("X (user units)")
+    ax.set_ylabel("Y (user units)")
     st.pyplot(fig)
 
+    # --- Download CSV Button (real-world units, no scientific notation, 6 decimals) ---
     csv_buffer = io.StringIO()
-    np.savetxt(csv_buffer, final_all_coords_np, delimiter=",", header="x,y", comments="", fmt="%.6f")
+    np.savetxt(csv_buffer, denorm_coords, delimiter=",", header="x,y", comments="", fmt="%.6f")
     csv_data = csv_buffer.getvalue()
     st.download_button(
         label="Download Predicted Coordinates as CSV",
