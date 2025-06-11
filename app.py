@@ -281,6 +281,7 @@ width_ratio = None
 if uploaded_file is not None:
     try:
         user_img = Image.open(uploaded_file).convert("RGB")
+        st.session_state['original_size'] = user_img.size  # <--- Store original size here!
         cropped = crop_to_plot_area(user_img)
         line_isolated = isolate_function_line(cropped)
         prepared_img, width_ratio = prepare_image_for_model(line_isolated)
@@ -360,7 +361,18 @@ if do_predict:
         y_real = coords[:,1] * (user_y_max - user_y_min) + user_y_min
         denorm_coords = np.stack([x_real, y_real], axis=1)
 
-    fig, ax = plt.subplots(figsize=(12, 4))
+    # --- Begin: Dynamic figure size for aspect ratio ---
+    if 'original_size' in st.session_state:
+        original_width, original_height = st.session_state['original_size']
+        aspect_ratio = original_width / original_height
+        plot_height = 5  # You can adjust this as needed
+        plot_width = plot_height * aspect_ratio
+        final_figsize = (plot_width, plot_height)
+    else:
+        final_figsize = (12, 4)
+    # --- End: Dynamic figure size ---
+
+    fig, ax = plt.subplots(figsize=final_figsize)
     ax.plot(denorm_coords[:, 0], denorm_coords[:, 1], marker='o', markersize=2)
     ax.set_xlim([user_x_min, user_x_max])
     ax.set_ylim([user_y_min, user_y_max])
