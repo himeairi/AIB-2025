@@ -5,4 +5,4 @@ numpy
 matplotlib
 gdown
 opencv-python-headless
-torch --index-url https://download.pytorch.org/whl/cpu
+torch==2.3.1 --index-url https://download.pytorch.org/whl/cpu
