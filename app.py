@@ -145,9 +145,13 @@ def crop_to_plot_area(pil_img):
         return pil_img
 
 def isolate_function_line(pil_img):
-    """Try to isolate the function line. Color filter; if fails, fallback to biggest contour."""
+    """Try to isolate the function line. Color filter; if fails, fallback to biggest contour. After filtering, apply morphological closing and dilation to ensure a solid, continuous line."""
     cv2_img = pil_to_cv2(pil_img)
     hsv = cv2.cvtColor(cv2_img, cv2.COLOR_BGR2HSV)
+
+    # Morphological kernel for closing and dilation (step up: robustness)
+    kernel = np.ones((5, 5), np.uint8)
+
     # Try to find colored line (red, blue, green, etc.)
     # Assume that a strong color line is present
     masks = []
@@ -162,12 +166,16 @@ def isolate_function_line(pil_img):
     color_mask = cv2.medianBlur(color_mask, 5)
     if cv2.countNonZero(color_mask) > 100:  # Color line found
         res = cv2.bitwise_and(cv2_img, cv2_img, mask=color_mask)
-        # Convert non-zero area to white, rest to black
         gray = cv2.cvtColor(res, cv2.COLOR_BGR2GRAY)
         _, bw = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
+        # --- Morphological Operations ---
+        closed_line = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, kernel)
+        dilated_line = cv2.dilate(closed_line, kernel, iterations=1)
+        # Draw line on white canvas
         line_img = np.ones_like(cv2_img) * 255
-        line_img[bw > 0] = [0,0,0]
+        line_img[dilated_line > 0] = [0,0,0]
         return cv2_to_pil(line_img)
+
     # Fallback: largest contour (for B&W)
     gray = cv2.cvtColor(cv2_img, cv2.COLOR_BGR2GRAY)
     bw = cv2.adaptiveThreshold(gray,255,cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV,15,8)
@@ -177,8 +185,11 @@ def isolate_function_line(pil_img):
     largest = max(contours, key=cv2.contourArea)
     mask = np.zeros_like(gray)
     cv2.drawContours(mask, [largest], -1, 255, thickness=3)
+    # --- Morphological Operations ---
+    closed_line = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    dilated_line = cv2.dilate(closed_line, kernel, iterations=1)
     line_img = np.ones_like(cv2_img)*255
-    line_img[mask > 0] = [0,0,0]
+    line_img[dilated_line > 0] = [0,0,0]
     return cv2_to_pil(line_img)
 
 def prepare_image_for_model(pil_img):
