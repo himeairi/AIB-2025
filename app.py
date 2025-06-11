@@ -10,13 +10,11 @@ import gdown
 import io
 
 import cv2
-import tempfile
 
 # --- Model Configurations (MUST MATCH 9th EXPERIMENT) ---
 NUM_POINTS_FULL_GRAPH = 300
 NUM_STRIPS = 3
-# Always use 100 as model argument for robustness as per instructions
-MODEL_NUM_POINTS_ARG = 100
+MODEL_NUM_POINTS_ARG = 100  # Hardcoded for robustness
 STRIP_WIDTH = 224
 STRIP_HEIGHT = 224
 RNN_HIDDEN_SIZE = 256
@@ -75,7 +73,6 @@ class ViTGraphModel(nn.Module):
 @st.cache_resource
 def load_model_and_processor(model_path, vit_name):
     processor = ViTImageProcessor.from_pretrained(vit_name)
-    # Hardcode num_points=100 for robustness
     model = ViTGraphModel(
         num_points=100,
         vit_model_name=vit_name,
@@ -110,7 +107,7 @@ def download_if_needed(gdrive_url, output_path):
         st.success("Model downloaded successfully!")
     return True
 
-# ========== STEP 3: IMAGE PRE-PROCESSING PIPELINE FUNCTIONS ==========
+# --- IMAGE PRE-PROCESSING PIPELINE FUNCTIONS ---
 
 def pil_to_cv2(img):
     img = img.convert('RGB')
@@ -145,15 +142,13 @@ def crop_to_plot_area(pil_img):
         return pil_img
 
 def isolate_function_line(pil_img):
-    """Try to isolate the function line. Color filter; if fails, fallback to biggest contour. After filtering, apply morphological closing and dilation to ensure a solid, continuous line."""
+    """
+    Robustly reconstruct a continuous line from rough/fragmented images using contour centroid connect-the-dots logic.
+    """
     cv2_img = pil_to_cv2(pil_img)
     hsv = cv2.cvtColor(cv2_img, cv2.COLOR_BGR2HSV)
 
-    # Morphological kernel for closing and dilation (step up: robustness)
-    kernel = np.ones((5, 5), np.uint8)
-
-    # Try to find colored line (red, blue, green, etc.)
-    # Assume that a strong color line is present
+    # Try color-based mask first
     masks = []
     # Red
     masks.append(cv2.inRange(hsv, (0,70,50), (10,255,255)))
@@ -164,32 +159,41 @@ def isolate_function_line(pil_img):
     masks.append(cv2.inRange(hsv, (36, 25, 25), (86, 255,255)))
     color_mask = sum(masks)
     color_mask = cv2.medianBlur(color_mask, 5)
-    if cv2.countNonZero(color_mask) > 100:  # Color line found
-        res = cv2.bitwise_and(cv2_img, cv2_img, mask=color_mask)
-        gray = cv2.cvtColor(res, cv2.COLOR_BGR2GRAY)
-        _, bw = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
-        # --- Morphological Operations ---
-        closed_line = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, kernel)
-        dilated_line = cv2.dilate(closed_line, kernel, iterations=1)
-        # Draw line on white canvas
-        line_img = np.ones_like(cv2_img) * 255
-        line_img[dilated_line > 0] = [0,0,0]
-        return cv2_to_pil(line_img)
 
-    # Fallback: largest contour (for B&W)
-    gray = cv2.cvtColor(cv2_img, cv2.COLOR_BGR2GRAY)
-    bw = cv2.adaptiveThreshold(gray,255,cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV,15,8)
-    contours, _ = cv2.findContours(bw, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
-        return pil_img
-    largest = max(contours, key=cv2.contourArea)
-    mask = np.zeros_like(gray)
-    cv2.drawContours(mask, [largest], -1, 255, thickness=3)
-    # --- Morphological Operations ---
-    closed_line = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    dilated_line = cv2.dilate(closed_line, kernel, iterations=1)
-    line_img = np.ones_like(cv2_img)*255
-    line_img[dilated_line > 0] = [0,0,0]
+    used_mask = None
+    if cv2.countNonZero(color_mask) > 100:  # Color line found
+        used_mask = color_mask
+    else:
+        # Fallback: B&W image
+        gray = cv2.cvtColor(cv2_img, cv2.COLOR_BGR2GRAY)
+        bw = cv2.adaptiveThreshold(gray,255,cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV,15,8)
+        used_mask = bw
+
+    # --- Connect-the-dots logic ---
+    # 1. Find all contours in the mask
+    contours, _ = cv2.findContours(used_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    centroids = []
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < 4:  # Filter out tiny noise
+            continue
+        M = cv2.moments(cnt)
+        if M["m00"] != 0:
+            cX = int(M["m10"] / M["m00"])
+            cY = int(M["m01"] / M["m00"])
+            centroids.append((cX, cY))
+    # 2. Sort the centroids by x-coordinate (left to right)
+    centroids.sort(key=lambda pt: pt[0])
+
+    # 3. Draw the new continuous line on a white background
+    h, w = used_mask.shape
+    line_img = np.ones((h, w, 3), dtype=np.uint8) * 255
+    if len(centroids) >= 2:
+        pts = np.array(centroids, dtype=np.int32).reshape(-1,1,2)
+        cv2.polylines(line_img, [pts], isClosed=False, color=(0,0,0), thickness=3)
+    elif len(centroids) == 1:
+        cv2.circle(line_img, centroids[0], radius=1, color=(0,0,0), thickness=2)
+
     return cv2_to_pil(line_img)
 
 def prepare_image_for_model(pil_img):
@@ -203,7 +207,7 @@ def prepare_image_for_model(pil_img):
     width_ratio = resized_w / 672.0
     return canvas, width_ratio
 
-# ========== END IMAGE PRE-PROCESSING PIPELINE FUNCTIONS ==========
+# --- Streamlit App UI ---
 
 st.title("mCGE.AI in action!")
 
@@ -230,14 +234,12 @@ user_x_max = st.sidebar.number_input("X-Max", value=1.0, format="%.6f")
 user_y_min = st.sidebar.number_input("Y-Min", value=0.0, format="%.6f")
 user_y_max = st.sidebar.number_input("Y-Max", value=1.0, format="%.6f")
 
-# --- Image selection and upload ---
 IMAGE_DIR = "Example Image"
 example_images = sorted(
     [f for f in os.listdir(IMAGE_DIR) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
 )
 uploaded_file = st.file_uploader("Or upload your own chart image", type=["png", "jpg", "jpeg"])
 
-# STEP 4: If user uploads, instantly run preprocessing pipeline and show preview
 prepared_img = None
 width_ratio = None
 
@@ -260,19 +262,16 @@ elif example_images:
     selected_image_path = os.path.join(IMAGE_DIR, selected_image_name)
     pil_img = Image.open(selected_image_path).convert("RGB")
     st.image(pil_img, caption=f"Selected Image: {selected_image_name}", channels="RGB")
-    # For demo images, process only if user clicks predict
 else:
     st.error(f"No images found in the folder '{IMAGE_DIR}'. Please add images or upload one.")
 
 do_predict = st.button("Run Prediction")
 
 if do_predict:
-    # STEP 5: Use session_state prepared image if user uploaded, else process example image live
     if uploaded_file is not None and 'prepared_img' in st.session_state and 'width_ratio' in st.session_state:
         img_for_model = st.session_state['prepared_img']
         width_ratio = st.session_state['width_ratio']
     elif example_images:
-        # For demo images, run the pipeline on the selected sample
         cropped = crop_to_plot_area(pil_img)
         line_isolated = isolate_function_line(cropped)
         img_for_model, width_ratio = prepare_image_for_model(line_isolated)
@@ -321,16 +320,11 @@ if do_predict:
             current_strip_start_coord_global = global_points[-1]
 
         coords = np.vstack(all_global_points)
-
-        # FILTER: Only keep points where x <= width_ratio
         coords = coords[coords[:,0] <= width_ratio]
-
-        # DENORMALIZE using user input
         x_real = coords[:,0] / width_ratio * (user_x_max - user_x_min) + user_x_min
         y_real = coords[:,1] * (user_y_max - user_y_min) + user_y_min
         denorm_coords = np.stack([x_real, y_real], axis=1)
 
-    # Plot denormalized data
     fig, ax = plt.subplots(figsize=(12, 4))
     ax.plot(denorm_coords[:, 0], denorm_coords[:, 1], marker='o', markersize=2)
     ax.set_xlim([user_x_min, user_x_max])
@@ -341,7 +335,6 @@ if do_predict:
     ax.set_ylabel("Y (user units)")
     st.pyplot(fig)
 
-    # --- Download CSV Button (real-world units, no scientific notation, 6 decimals) ---
     csv_buffer = io.StringIO()
     np.savetxt(csv_buffer, denorm_coords, delimiter=",", header="x,y", comments="", fmt="%.6f")
     csv_data = csv_buffer.getvalue()
