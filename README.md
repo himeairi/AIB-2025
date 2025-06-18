@@ -1,5 +1,5 @@
-# AIB5 - mGCE.AI 
-Mathematical Graph Coordinate Extractor [Part 1][Prototype]
+# AIB5 - GRDG.AI 
+Graph Digitizer [Part 1]
 
 <img src="https://github.com/user-attachments/assets/1bd5dca5-c321-4a39-a562-02599a8c8c88" width="600" height="350" />
 
