@@ -11,7 +11,7 @@ import io
 
 import cv2
 
-# --- Model Configurations (MUST MATCH 9th EXPERIMENT) ---
+# Model Configurations
 NUM_POINTS_FULL_GRAPH = 300
 NUM_STRIPS = 3
 MODEL_NUM_POINTS_ARG = 100  # Hardcoded for robustness
@@ -107,7 +107,7 @@ def download_if_needed(gdrive_url, output_path):
         st.success("Model downloaded successfully!")
     return True
 
-# --- IMAGE PRE-PROCESSING PIPELINE FUNCTIONS ---
+# IMAGE PRE-PROCESSING PIPELINE FUNCTIONS 
 def pil_to_cv2(img):
     img = img.convert('RGB')
     return cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
@@ -155,7 +155,7 @@ def isolate_function_line(pil_img):
         gray = cv2.cvtColor(cv2_img, cv2.COLOR_BGR2GRAY)
         bw = cv2.adaptiveThreshold(gray,255,cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV,15,8)
         used_mask = bw
-    # --- Robust connect-the-dots with normalization ---
+    # Robust connect-the-dots with normalization 
     contours, _ = cv2.findContours(used_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     centroids = []
     for cnt in contours:
@@ -207,7 +207,7 @@ def prepare_image_for_model(pil_img):
     width_ratio = resized_w / 672.0
     return canvas, width_ratio
 
-# --- Streamlit App UI ---
+# Streamlit App UI
 
 st.title("GRDG.AI in action!")
 
@@ -224,7 +224,7 @@ except Exception as e:
     st.error(f"Error loading model or processor from {LOCAL_MODEL_PATH}: {e}")
     st.stop()
 
-# --- UI: Input sidebar for first point and chart axes min/max ---
+# UI: Input sidebar for first point and chart axes min/max
 st.sidebar.header("First Point (P0) Input")
 p0_y = st.sidebar.number_input("First Point Y (Global, [0,1])", min_value=0.0, max_value=1.0, value=0.5, step=0.000001, format="%.6f")
 p0_x = 0.0
@@ -270,7 +270,7 @@ else:
 do_predict = st.button("Run Prediction")
 
 if do_predict:
-    # --- Path 1: User-uploaded image, use full pipeline and denormalize ---
+    # Path 1: User-uploaded image, use full pipeline and denormalize 
     if uploaded_file is not None and 'prepared_img' in st.session_state and 'width_ratio' in st.session_state:
         img_for_model = st.session_state['prepared_img']
         width_ratio = st.session_state['width_ratio']
@@ -332,7 +332,7 @@ if do_predict:
             file_name="predicted_coords.csv",
             mime="text/csv"
         )
-    # --- Path 2: Example image, no pre-processing, no denormalization (v5 logic) ---
+    # Path 2: Example image, no pre-processing, no denormalization
     elif uploaded_file is None and pil_img is not None:
         img_for_model = pil_img
         with torch.no_grad():
