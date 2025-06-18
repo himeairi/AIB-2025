@@ -209,7 +209,7 @@ def prepare_image_for_model(pil_img):
 
 # --- Streamlit App UI ---
 
-st.title("mCGE.AI in action!")
+st.title("GRDG.AI in action!")
 
 MODEL_GDRIVE_URL = "https://drive.google.com/file/d/1FD3pjwyKa6sK7E_HvO4cU1BwWdBkcjOS/view?usp=drive_link"
 LOCAL_MODEL_PATH = "vit_rnn_attn_model_tile_final.pth"
