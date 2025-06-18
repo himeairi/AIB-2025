@@ -5,7 +5,7 @@ mathematical Graph Digitizer [Part 1]
  width="600" height="350" />
 
 ## Blog
-Medium : https://medium.com/@ryutarakiedcharoensiri/mgce-ai-part-i-6f93500cf0b8
+Medium : [https://medium.com/@ryutarakiedcharoensiri/grdg-ai-part-i-6f93500cf0b8](https://medium.com/@ryutarakiedcharoensiri/mgce-ai-part-i-6f93500cf0b8)
 
 ## Deployment
 Streamlit.io : https://himeairi-aib-2025-app-joaskq.streamlit.app
